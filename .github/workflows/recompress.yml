@@ -1,0 +1,88 @@
+name: Recompress MPC-HC Builds
+
+on:
+  push:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  recompress:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+
+      - name: Install required software
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full jq curl unzip
+
+      - name: Get latest MPC-HC release info
+        id: get_release
+        run: |
+          # Fetch releases, skip prereleases if any, pick most recent stable
+          rel=$(curl -s https://api.github.com/repos/clsid2/mpc-hc/releases \
+            | jq 'map(select(.prerelease == false)) | .[0]')
+
+          tag=$(echo "$rel" | jq -r .tag_name)
+          title=$(echo "$rel" | jq -r .name)
+
+          # Extract all asset URLs matching MPC-HC.<version>.x64.zip
+          assets=$(echo "$rel" | jq -r '.assets[] | select(.name | test("^MPC-HC\\.[0-9\\.]+\\.x64\\.zip$")) | .browser_download_url')
+
+          echo "tag=$tag" >> $GITHUB_OUTPUT
+          echo "title=$title" >> $GITHUB_OUTPUT
+          echo "assets<<EOF" >> $GITHUB_OUTPUT
+          echo "$assets" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Check if release already exists
+        id: check_release
+        run: |
+          existing=$(curl -s \
+            -H "Authorization: token ${{ vars.PAT_TOKEN }}" \
+            https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ steps.get_release.outputs.tag }})
+          if echo "$existing" | grep -q '"id":'; then
+            echo "already_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "already_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download & recompress all matching builds
+        if: steps.check_release.outputs.already_exists == 'false'
+        run: |
+          mkdir recompressed
+          tag="${{ steps.get_release.outputs.tag }}"
+
+          echo "Downloading and recompressing all matching assets..."
+          echo "${{ steps.get_release.outputs.assets }}" | while read -r url; do
+            [ -z "$url" ] && continue
+            fname=$(basename "$url")
+            base="${fname%.zip}"
+            echo "Processing $fname"
+
+            # Download
+            curl -L -o "$fname" "$url"
+
+            # Extract and recompress
+            mkdir work
+            unzip -q "$fname" -d work
+            7z a -t7z -mx=9 "recompressed/${base}.7z" ./work/*
+
+            rm -rf work "$fname"
+          done
+
+      - name: Create new release
+        if: steps.check_release.outputs.already_exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.get_release.outputs.tag }}
+          name: "${{ steps.get_release.outputs.title }} recompressed"
+          body: "Recompressed from the original MPC-HC release at https://github.com/clsid2/mpc-hc/releases/tag/${{ steps.get_release.outputs.tag }}"
+          draft: false
+          prerelease: false
+          files: recompressed/*.7z
+        env:
+          GITHUB_TOKEN: ${{ vars.PAT_TOKEN }}

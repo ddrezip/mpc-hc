@@ -3,7 +3,7 @@ name: Recompress MPC-HC Builds
 on:
   push:
   schedule:
-    - cron: "0 2 * * *"
+    - cron: "0 1,16,17,18,20 * * *"
   workflow_dispatch:
 
 jobs:
@@ -17,7 +17,7 @@ jobs:
       - name: Install required software
         run: |
           sudo apt-get update
-          sudo apt-get install -y p7zip-full jq curl unzip
+          sudo apt-get install -y p7zip-full jq curl unzip upx-ucl
 
       - name: Get latest MPC-HC release info
         id: get_release
@@ -70,6 +70,13 @@ jobs:
             mkdir work
             unzip -q "$fname" -d work
             7z a -t7z -mx=9 "recompressed/${base}.7z" ./work/*
+            # Minimal version (excluding Lang and mpciconlib.dll)
+            7z a -t7z -mx=9 "recompressed/${base}-minimum.7z" ./work/* -xr!Lang -xr!mpciconlib.dll
+
+            # Compress all .exe and .dll files with UPX, and pack that as well
+            find work -type f \( -iname "*.exe" -o -iname "*.dll" \) -exec upx --ultra-brute {} \;
+            7z a -t7z -mx=9 "recompressed/${base}-upx.7z" ./work/*
+            7z a -t7z -mx=9 "recompressed/${base}-upx-minimum.7z" ./work/* -xr!Lang -xr!mpciconlib.dll
 
             rm -rf work "$fname"
           done
